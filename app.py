@@ -71,7 +71,7 @@ for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
-# 7. 音声認識（STT）コンポーネント：エラー完全リカバリー機能付き
+# 7. 音声認識（STT）＋ マイク音量（VAD）検知コンポーネント
 st.write("---")
 st.markdown("### 🎤 音声で話しかける")
 
@@ -102,13 +102,20 @@ stt_html = """
     let sendTimer = null;
     let recognition = null;
     let isListening = false;
+    let audioCtx = null;
+    let analyser = null;
+    let micStream = null;
+    let animFrameId = null;
+    let hasSaidSomething = false;
 
     function resetButtonUI(msg) {
-        if (sendTimer) {
-            clearTimeout(sendTimer);
-            sendTimer = null;
-        }
+        if (sendTimer) { clearTimeout(sendTimer); sendTimer = null; }
+        if (animFrameId) { cancelAnimationFrame(animFrameId); animFrameId = null; }
+        if (micStream) { micStream.getTracks().forEach(t => t.stop()); micStream = null; }
+        if (audioCtx) { audioCtx.close(); audioCtx = null; }
+        
         isListening = false;
+        hasSaidSomething = false;
         btn.disabled = false;
         btn.innerText = "🎤 タップして英語で話す";
         btn.style.backgroundColor = "#FF4B4B";
@@ -116,19 +123,25 @@ stt_html = """
     }
 
     if (SpeechRecognition) {
-        btn.onclick = () => {
+        btn.onclick = async () => {
             if (isListening) {
-                // すでに聞き取り中の場合は即時送信・停止
                 stopAndSendNow();
                 return;
             }
 
             try {
-                // 既存のオブジェクトがあれば一度強制終了してクリーン化
-                if (recognition) {
-                    try { recognition.abort(); } catch(e) {}
-                }
+                // 1. Web Audio APIでマイクの「物理音量」を計測開始
+                micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+                analyser = audioCtx.createAnalyser();
+                const source = audioCtx.createMediaStreamSource(micStream);
+                source.connect(analyser);
+                analyser.fftSize = 256;
+                const bufferLength = analyser.frequencyBinCount;
+                const dataArray = new Uint8Array(bufferLength);
 
+                // 2. Web Speech API (テキスト化) の起動
+                if (recognition) { try { recognition.abort(); } catch(e) {} }
                 recognition = new SpeechRecognition();
                 recognition.lang = 'en-US';
                 recognition.interimResults = true;
@@ -136,14 +149,13 @@ stt_html = """
 
                 recognition.onstart = () => {
                     isListening = true;
-                    btn.innerText = "🔴 聞き取り中... (タップで即時送信)";
+                    btn.innerText = "🔴 聞き取り中... (声を出している間は待ちます)";
                     btn.style.backgroundColor = "#2E7D32";
                     status.innerText = "「Uhh...」「Um...」と考えながら話して大丈夫です";
+                    monitorVolume(dataArray, bufferLength);
                 };
 
                 recognition.onresult = (event) => {
-                    if (sendTimer) clearTimeout(sendTimer);
-
                     let currentText = '';
                     for (let i = 0; i < event.results.length; i++) {
                         currentText += event.results[i][0].transcript + ' ';
@@ -151,52 +163,61 @@ stt_html = """
                     
                     const doc = window.parent.document;
                     const chatInput = doc.querySelector('textarea[data-testid="stChatInputTextArea"]');
-                    
-                    if (chatInput) {
+                    if (chatInput && currentText.trim() !== '') {
+                        hasSaidSomething = true;
                         const nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value").set;
                         nativeInputValueSetter.call(chatInput, currentText.trim());
                         chatInput.dispatchEvent(new Event('input', { bubbles: true }));
+                        status.innerText = '認識中: "' + currentText.trim() + '"';
                     }
-
-                    btn.innerText = "🔴 聞き取り中... (無音になると2秒後に送信)";
-                    btn.style.backgroundColor = "#FFA000";
-                    status.innerText = '認識中: "' + currentText.trim() + '"';
-
-                    // 2秒間完全な無音が続いたら自動送信
-                    sendTimer = setTimeout(() => {
-                        stopAndSendNow();
-                    }, 2000);
                 };
 
                 recognition.onerror = (event) => {
-                    console.error("STT Error:", event.error);
-                    resetButtonUI("⚠️ マイクエラー (" + event.error + ")。もう一度タップしてください。");
-                };
-
-                recognition.onend = () => {
-                    // 自動切断されたが送信タイマーが作動していない場合、ボタン表示を元に戻す
-                    if (isListening && !sendTimer) {
-                        resetButtonUI("マイクがオフになりました。もう一度タップして話してください。");
-                    }
+                    resetButtonUI("⚠️ マイクエラー (" + event.error + ")。もう一度試してください。");
                 };
 
                 recognition.start();
 
             } catch(e) {
-                console.error("Start Error:", e);
-                resetButtonUI("⚠️ 起動に失敗しました。もう一度タップしてください。");
+                resetButtonUI("⚠️ マイクアクセスの許可が必要です。");
             }
         };
 
-        function stopAndSendNow() {
-            if (sendTimer) {
-                clearTimeout(sendTimer);
-                sendTimer = null;
+        // マイクの音量レベルを監視するルーチン
+        function monitorVolume(dataArray, bufferLength) {
+            if (!isListening) return;
+
+            analyser.getByteFrequencyData(dataArray);
+            let sum = 0;
+            for (let i = 0; i < bufferLength; i++) {
+                sum += dataArray[i];
+            }
+            let avgVolume = sum / bufferLength;
+
+            // しきい値（12以上であれば何らかの声・息・音が入っていると判定）
+            if (avgVolume > 12) {
+                if (sendTimer) {
+                    clearTimeout(sendTimer);
+                    sendTimer = null;
+                }
+                btn.innerText = "🔴 声（音）を検知中... (話している間は待ちます)";
+                btn.style.backgroundColor = "#2E7D32";
+            } else {
+                // 音が入っておらず無音状態、かつ何か発話が始まっていた場合
+                if (hasSaidSomething && !sendTimer) {
+                    btn.innerText = "⏸️ 無音を検知: 2秒後に自動送信";
+                    btn.style.backgroundColor = "#FFA000";
+                    sendTimer = setTimeout(() => {
+                        stopAndSendNow();
+                    }, 2000); // 無音が完全2秒続いたら送信
+                }
             }
 
-            if (recognition) {
-                try { recognition.stop(); } catch(e) {}
-            }
+            animFrameId = requestAnimationFrame(() => monitorVolume(dataArray, bufferLength));
+        }
+
+        function stopAndSendNow() {
+            if (recognition) { try { recognition.stop(); } catch(e) {} }
 
             const doc = window.parent.document;
             const chatInput = doc.querySelector('textarea[data-testid="stChatInputTextArea"]');
