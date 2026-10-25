@@ -337,17 +337,33 @@ if user_input:
         try:
             response = st.session_state.chat_session.send_message(user_input)
             
+            # --- エラー防止：レスポンスから安全にテキストを取得 ---
+            reply_text = ""
+            try:
+                if hasattr(response, 'text') and response.text:
+                    reply_text = response.text
+            except ValueError:
+                pass
+
+            # テキストが取得できなかった場合の補完メッセージ
+            if not reply_text:
+                if response.candidates and len(response.candidates) > 0 and response.candidates[0].content.parts:
+                    reply_text = "".join([part.text for part in response.candidates[0].content.parts if hasattr(part, 'text')])
+                
+                if not reply_text:
+                    reply_text = "I couldn't hear you clearly. Could you please say that again?"
+
             # 「もう一度聴く」ボタンを表示
-            render_audio_button(response.text)
+            render_audio_button(reply_text)
 
             # テキストは折りたたんで隠す
             with st.expander("👁️ テキストを表示して確認する", expanded=False):
-                st.markdown(response.text)
+                st.markdown(reply_text)
 
-            st.session_state.messages.append({"role": "assistant", "content": response.text})
+            st.session_state.messages.append({"role": "assistant", "content": reply_text})
 
             # 返答直後の自動音声発話
-            safe_text = response.text.replace('\n', ' ').replace("'", "\\'").replace('"', '\\"')
+            safe_text = reply_text.replace('\n', ' ').replace("'", "\\'").replace('"', '\\"')
             tts_html = f"""
             <script>
                 const utterance = new SpeechSynthesisUtterance('{safe_text}');
