@@ -23,17 +23,20 @@ SYSTEM_PROMPT = """
 - 中学生が習う基本的な単語と文法を中心に使ってください。
 """
 
-# 4. 利用可能なFlashモデルを自動探索して読み込む関数
+# 4. 利用可能な最新モデルを自動探索して読み込む関数
 @st.cache_resource
 def load_model():
-    # 利用可能なモデルの中から、Flash系のモデルを優先的に探す
+    # 利用可能なモデルの中から、テキスト生成に対応したモデルを取得
     available_models = []
-    for m in genai.list_models():
-        if 'generateContent' in m.supported_generation_methods:
-            available_models.append(m.name)
-    
-    # 優先したいモデル名のキーワード順
-    priority_keywords = ["2.5-flash-lite", "2.5-flash", "2.0-flash", "flash"]
+    try:
+        for m in genai.list_models():
+            if 'generateContent' in m.supported_generation_methods:
+                available_models.append(m.name)
+    except Exception as e:
+        pass
+
+    # 優先したいモデルキーワード（最新の3.5 / 3.0 / Flash系を最優先）
+    priority_keywords = ["3.5-flash-lite", "3.5-flash", "3.0-flash", "2.5-flash-lite", "flash"]
     
     target_model_name = None
     for kw in priority_keywords:
@@ -44,12 +47,9 @@ def load_model():
         if target_model_name:
             break
             
-    # もし該当が見つからない場合は一覧の最初のモデルを使用
-    if not target_model_name and available_models:
-        target_model_name = available_models[0]
-        
+    # 一覧で見つからない場合のフォールバック指定
     if not target_model_name:
-        raise Exception("利用可能なGeminiモデルが見つかりませんでした。APIキーを確認してください。")
+        target_model_name = "models/gemini-3.5-flash-lite"
 
     return genai.GenerativeModel(
         model_name=target_model_name,
