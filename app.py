@@ -17,6 +17,7 @@ genai.configure(api_key=API_KEY)
 # 3. システムプロンプトの設定（中学生向け）
 SYSTEM_PROMPT = """
 あなたは日本の中学生に英語を教える、優しくフレンドリーなAI教師です。
+- 生徒の発話に Uhh, Um などの言い淀み（フィラー）が含まれていても問題なく意図を汲み取ってください。
 - 生徒の英語表現にミスがあれば、優しく1つだけ訂正してください。
 - 常に英語で、2〜3文（30語以内）で短く返答してください。
 - 会話を続けるために、最後に必ず簡単な質問を1つ投げかけてください。
@@ -70,7 +71,7 @@ for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
-# 7. 音声認識（STT）コンポーネント：話すと自動入力・自動送信
+# 7. 音声認識（STT）コンポーネント：言い淀み対応＋2秒猶予タイマー自動送信
 st.write("---")
 st.markdown("### 🎤 音声で話しかける")
 
@@ -98,58 +99,75 @@ stt_html = """
     const status = document.getElementById('stt-status');
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
 
+    let sendTimer = null;
+
     if (SpeechRecognition) {
         const recognition = new SpeechRecognition();
-        recognition.lang = 'en-US'; // 英語固定
-        recognition.interimResults = false;
+        recognition.lang = 'en-US'; // 英語設定
+        recognition.interimResults = true; // 話している途中の音（Uhh/Um等も含む）をリアルタイム取得
 
         btn.onclick = () => {
+            if (sendTimer) {
+                // タイマーカウントダウン中のキャンセルの場合
+                clearTimeout(sendTimer);
+                sendTimer = null;
+                btn.innerText = "🎤 タップして英語で話す";
+                btn.style.backgroundColor = "#FF4B4B";
+                status.innerText = "送信をキャンセルしました。もう一度話すか続きを話してください。";
+                return;
+            }
+
             try {
                 recognition.start();
-                btn.innerText = "🔴 聞き取り中... 英語で話してね";
+                btn.innerText = "🔴 聞き取り中... (Uhh... や Um... もOK)";
                 btn.style.backgroundColor = "#2E7D32";
-                status.innerText = "話し終わると自動的に送信されます";
+                status.innerText = "考えながら声を出して大丈夫です";
             } catch(e) {
                 recognition.stop();
             }
         };
 
         recognition.onresult = (event) => {
-            const text = event.results[0][0].transcript;
+            let currentText = '';
+            for (let i = 0; i < event.results.length; i++) {
+                currentText += event.results[i][0].transcript;
+            }
             
-            // Streamlitの内部Stateに認識結果を正しく伝播させる処理
+            // Streamlitのテキストエリアに入力結果を反映
             const doc = window.parent.document;
             const chatInput = doc.querySelector('textarea[data-testid="stChatInputTextArea"]');
             
             if (chatInput) {
-                // Reactのプロパティセッターを使って値を強制書き換え
                 const nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value").set;
-                nativeInputValueSetter.call(chatInput, text);
-                
-                // inputイベントを発生させてStreamlit側に状態を検知させる
+                nativeInputValueSetter.call(chatInput, currentText);
                 chatInput.dispatchEvent(new Event('input', { bubbles: true }));
-                
-                status.innerText = '✅ 送信中: "' + text + '"';
-
-                // 少し時間を置いてからEnterキーイベントを発火して自動送信
-                setTimeout(() => {
-                    const enterEvent = new KeyboardEvent('keydown', {
-                        bubbles: true,
-                        cancelable: true,
-                        key: 'Enter',
-                        code: 'Enter',
-                        keyCode: 13,
-                        which: 13
-                    });
-                    chatInput.dispatchEvent(enterEvent);
-                }, 300);
-
-            } else {
-                status.innerText = '音声認識結果: "' + text + '" (コピーして入力欄に貼り付けてください)';
+                status.innerText = '音声認識中: "' + currentText + '"';
             }
 
-            btn.innerText = "🎤 タップして英語で話す";
-            btn.style.backgroundColor = "#FF4B4B";
+            // 確定結果（isFinal）が得られたらタイマー起動
+            if (event.results[0].isFinal) {
+                btn.innerText = "⏸️ 2秒後に自動送信（タップでキャンセル）";
+                btn.style.backgroundColor = "#FFA000";
+
+                sendTimer = setTimeout(() => {
+                    if (chatInput) {
+                        const enterEvent = new KeyboardEvent('keydown', {
+                            bubbles: true,
+                            cancelable: true,
+                            key: 'Enter',
+                            code: 'Enter',
+                            keyCode: 13,
+                            which: 13
+                        });
+                        chatInput.dispatchEvent(enterEvent);
+                    }
+                    
+                    btn.innerText = "🎤 タップして英語で話す";
+                    btn.style.backgroundColor = "#FF4B4B";
+                    status.innerText = "送信完了！AIの返答を待っています...";
+                    sendTimer = null;
+                }, 2000); // 2000ms = 2秒
+            }
         };
 
         recognition.onerror = (event) => {
@@ -159,8 +177,10 @@ stt_html = """
         };
 
         recognition.onend = () => {
-            btn.innerText = "🎤 タップして英語で話す";
-            btn.style.backgroundColor = "#FF4B4B";
+            if (!sendTimer) {
+                btn.innerText = "🎤 タップして英語で話す";
+                btn.style.backgroundColor = "#FF4B4B";
+            }
         };
     } else {
         btn.disabled = true;
