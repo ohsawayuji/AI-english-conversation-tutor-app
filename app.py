@@ -23,19 +23,45 @@ SYSTEM_PROMPT = """
 - 中学生が習う基本的な単語と文法を中心に使ってください。
 """
 
-# 4. モデルの読み込み関数（キャッシュ有効化）
-# ※モデルが見つからないエラーを避けるため、安全なモデル名を指定しています
+# 4. 利用可能なFlashモデルを自動探索して読み込む関数
 @st.cache_resource
 def load_model():
+    # 利用可能なモデルの中から、Flash系のモデルを優先的に探す
+    available_models = []
+    for m in genai.list_models():
+        if 'generateContent' in m.supported_generation_methods:
+            available_models.append(m.name)
+    
+    # 優先したいモデル名のキーワード順
+    priority_keywords = ["2.5-flash-lite", "2.5-flash", "2.0-flash", "flash"]
+    
+    target_model_name = None
+    for kw in priority_keywords:
+        for m_name in available_models:
+            if kw in m_name:
+                target_model_name = m_name
+                break
+        if target_model_name:
+            break
+            
+    # もし該当が見つからない場合は一覧の最初のモデルを使用
+    if not target_model_name and available_models:
+        target_model_name = available_models[0]
+        
+    if not target_model_name:
+        raise Exception("利用可能なGeminiモデルが見つかりませんでした。APIキーを確認してください。")
+
     return genai.GenerativeModel(
-        model_name="gemini-1.5-flash",  # gemini-2.5-flash-lite も利用可能です
+        model_name=target_model_name,
         system_instruction=SYSTEM_PROMPT
-    )
+    ), target_model_name
 
 try:
-    model = load_model()
+    model, used_model_name = load_model()
+    # 接続に成功したモデル名を画面上に小さく表示
+    st.caption(f"🤖 接続モデル: `{used_model_name}`")
 except Exception as e:
-    st.error(f"モデルの読み込みに失敗しました: {e}")
+    st.error(f"モデルの自動接続に失敗しました: {e}")
     st.stop()
 
 # 5. セッション状態（会話履歴）の初期化
