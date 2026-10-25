@@ -61,7 +61,7 @@ def create_system_prompt(theme_name):
 - 返答はすべて英語で、2〜3文（30語以内）の短い文に収めてください。
 - 生徒の表現に文法や単語のミスがあっても、会話のテンポを優先し、直すのは多くて1箇所だけに留めてください。
 - 選んだテーマのジャンル、理由、感想を自然なやり取りの中で聞いてください。
-- 会話を続けるため、返答の最後には必ず中学生レベルの簡単な質問（Yes/Noで答えられるもの、または2択の質問）を1つ投げかけてください。
+- 会話を続けるため、返答の最後には中学生レベルの、生徒が返答した内容をより深めることができる簡単な質問か、Yes/Noで答えられるもの、2択の質問を1つ投げかけてください。
 - 使用する単語と文法は、英検3級〜4級レベル（中学校で習う基本表現）を中心にしてください。
 """
 
@@ -337,43 +337,9 @@ if user_input:
         try:
             response = st.session_state.chat_session.send_message(user_input)
             
-            # --- エラー防止：レスポンスから安全にテキストを取得 ---
+            # レスポンスから安全にテキストを取得
             reply_text = ""
             try:
                 if hasattr(response, 'text') and response.text:
                     reply_text = response.text
             except ValueError:
-                pass
-
-            # テキストが取得できなかった場合の補完メッセージ
-            if not reply_text:
-                if response.candidates and len(response.candidates) > 0 and response.candidates[0].content.parts:
-                    reply_text = "".join([part.text for part in response.candidates[0].content.parts if hasattr(part, 'text')])
-                
-                if not reply_text:
-                    reply_text = "I couldn't hear you clearly. Could you please say that again?"
-
-            # 「もう一度聴く」ボタンを表示
-            render_audio_button(reply_text)
-
-            # テキストは折りたたんで隠す
-            with st.expander("👁️ テキストを表示して確認する", expanded=False):
-                st.markdown(reply_text)
-
-            st.session_state.messages.append({"role": "assistant", "content": reply_text})
-
-            # 返答直後の自動音声発話
-            safe_text = reply_text.replace('\n', ' ').replace("'", "\\'").replace('"', '\\"')
-            tts_html = f"""
-            <script>
-                const utterance = new SpeechSynthesisUtterance('{safe_text}');
-                utterance.lang = 'en-US';
-                utterance.rate = 0.9;
-                window.speechSynthesis.cancel();
-                window.speechSynthesis.speak(utterance);
-            </script>
-            """
-            components.html(tts_html, height=0)
-
-        except Exception as e:
-            st.error(f"エラーが発生しました: {e}")
