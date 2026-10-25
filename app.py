@@ -14,14 +14,19 @@ if "GEMINI_API_KEY" not in st.secrets:
 API_KEY = st.secrets["GEMINI_API_KEY"]
 genai.configure(api_key=API_KEY)
 
-# 3. システムプロンプトの設定（中学生向け）
+# 3. システムプロンプトの設定（中学生・言い淀み対応向け）
 SYSTEM_PROMPT = """
-あなたは日本の中学生に英語を教える、優しくフレンドリーなAI教師です。
-- 生徒の発話に Uhh, Um, Ah などの言い淀み（フィラー）が含まれていても、優しく意図を汲み取って会話を続けてください。
-- 生徒の英語表現にミスがあれば、優しく1つだけ訂正してください。
-- 常に英語で、2〜3文（30語以内）で短く返答してください。
-- 会話を続けるために、最後に必ず簡単な質問を1つ投げかけてください。
-- 中学生が習う基本的な単語と文法を中心に使ってください。
+あなたは日本の中学生に優しく寄り添う、フレンドリーで褒め上手なAI英語教師です。
+
+【役割と姿勢】
+- 生徒が「Uhh...」「Um...」「Well...」と言い淀んだり単語に詰まったりしても絶対に否定せず、「Take your time!」「Good try!」などの温かい言葉で優しく励ましてください。
+- 生徒が単語だけで答えたり途切れたりした場合は、生徒の意図を優しく推測し、「Did you mean ...?」と補完したり、「For example, apple or banana?」のように答えやすい選択肢やヒントを出して会話を繋げてくだい。
+
+【返答のルール】
+- 返答はすべて英語で、2〜3文（30語以内）の短い文に収めてください。
+- 生徒の表現に文法や単語のミスがあっても、会話のテンポを優先し、直すのは多くて1箇所だけに留めてください。
+- 会話を続けるため、返答の最後には必ず中学生レベルの簡単な質問（Yes/Noで答えられるもの、または2択の質問）を1つ投げかけてください。
+- 使用する単語と文法は、英検3級〜4級レベル（中学校で習う基本表現）を中心にしてください。
 """
 
 # 4. 利用可能な最新モデルを自動探索して読み込む関数
@@ -60,18 +65,63 @@ except Exception as e:
     st.error(f"モデルの自動接続に失敗しました: {e}")
     st.stop()
 
-# 5. セッション状態の初期化
+# 5. 生徒向け使い方ガイド（折りたたみ表示）
+with st.expander("📖 使い方ガイド（はじめに読んでね！）", expanded=False):
+    st.markdown("""
+    ### 🎤 上手な話し方のコツ
+    1. **マイクの距離**: マイク（または端末）は**口元からこぶし1個分（約10cm）**離して使おう。
+    2. **大きな声で発表**: 授業で発表するときと同じくらいのハキハキした声で話そう！
+    3. **「Uhh...」「Um...」と言ってOK**: 言葉につまったら黙らずに「Uhh...」「Um...」と声に出しながら考えよう。声を出し続けていればAI先生は待ってくれます。
+    4. **耳で何度も聴こう**: 聞き取れなかったときは「🔊 もう一度聴く」ボタンをタップして何度でも聴き直そう！
+    """)
+
+# 6. セッション状態の初期化
 if "chat_session" not in st.session_state:
     st.session_state.chat_session = model.start_chat(history=[])
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-# 6. これまでの会話履歴を表示
+# 音声再生ボタンを出力するヘルパー関数
+def render_audio_button(text):
+    safe_text = text.replace('\n', ' ').replace("'", "\\'").replace('"', '\\"')
+    html_code = f"""
+    <div style="margin-bottom: 5px;">
+        <button onclick="
+            const utterance = new SpeechSynthesisUtterance('{safe_text}');
+            utterance.lang = 'en-US';
+            utterance.rate = 0.9;
+            window.speechSynthesis.cancel();
+            window.speechSynthesis.speak(utterance);
+        " style="
+            padding: 8px 16px;
+            font-size: 14px;
+            font-weight: bold;
+            background-color: #0288D1;
+            color: white;
+            border: none;
+            border-radius: 20px;
+            cursor: pointer;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        ">
+            🔊 もう一度聴く
+        </button>
+    </div>
+    """
+    components.html(html_code, height=45)
+
+# 7. これまでの会話履歴を表示
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
-        st.markdown(msg["content"])
+        if msg["role"] == "user":
+            st.markdown(msg["content"])
+        else:
+            # 「もう一度聴く」ボタンを表示
+            render_audio_button(msg["content"])
+            # テキストは折りたたんで非表示
+            with st.expander("👁️ テキストを表示して確認する", expanded=False):
+                st.markdown(msg["content"])
 
-# 7. 音声認識（STT）＋ マイク音量（VAD）検知コンポーネント
+# 8. 音声認識（STT）＋ マイク音量（VAD）ハイブリッドコンポーネント
 st.write("---")
 st.markdown("### 🎤 音声で話しかける")
 
@@ -130,8 +180,13 @@ stt_html = """
             }
 
             try {
-                // 1. Web Audio APIでマイクの「物理音量」を計測開始
-                micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                micStream = await navigator.mediaDevices.getUserMedia({
+                    audio: {
+                        echoCancellation: true,
+                        noiseSuppression: true,
+                        autoGainControl: true
+                    }
+                });
                 audioCtx = new (window.AudioContext || window.webkitAudioContext)();
                 analyser = audioCtx.createAnalyser();
                 const source = audioCtx.createMediaStreamSource(micStream);
@@ -140,7 +195,6 @@ stt_html = """
                 const bufferLength = analyser.frequencyBinCount;
                 const dataArray = new Uint8Array(bufferLength);
 
-                // 2. Web Speech API (テキスト化) の起動
                 if (recognition) { try { recognition.abort(); } catch(e) {} }
                 recognition = new SpeechRecognition();
                 recognition.lang = 'en-US';
@@ -183,7 +237,6 @@ stt_html = """
             }
         };
 
-        // マイクの音量レベルを監視するルーチン
         function monitorVolume(dataArray, bufferLength) {
             if (!isListening) return;
 
@@ -194,7 +247,6 @@ stt_html = """
             }
             let avgVolume = sum / bufferLength;
 
-            // しきい値（12以上であれば何らかの声・息・音が入っていると判定）
             if (avgVolume > 12) {
                 if (sendTimer) {
                     clearTimeout(sendTimer);
@@ -203,13 +255,12 @@ stt_html = """
                 btn.innerText = "🔴 声（音）を検知中... (話している間は待ちます)";
                 btn.style.backgroundColor = "#2E7D32";
             } else {
-                // 音が入っておらず無音状態、かつ何か発話が始まっていた場合
                 if (hasSaidSomething && !sendTimer) {
                     btn.innerText = "⏸️ 無音を検知: 2秒後に自動送信";
                     btn.style.backgroundColor = "#FFA000";
                     sendTimer = setTimeout(() => {
                         stopAndSendNow();
-                    }, 2000); // 無音が完全2秒続いたら送信
+                    }, 2000);
                 }
             }
 
@@ -247,23 +298,28 @@ stt_html = """
 """
 components.html(stt_html, height=110)
 
-# 8. ユーザー入力エリア（キーボード／音声認識からの自動入力兼用）
+# 9. ユーザー入力エリア
 user_input = st.chat_input("英語でメッセージを入力（または上のボタンで音声入力）...")
 
 if user_input:
-    # ユーザーのメッセージを表示・記録
     with st.chat_message("user"):
         st.markdown(user_input)
     st.session_state.messages.append({"role": "user", "content": user_input})
 
-    # Gemini APIからの回答取得
     with st.chat_message("assistant"):
         try:
             response = st.session_state.chat_session.send_message(user_input)
-            st.markdown(response.text)
+            
+            # 「もう一度聴く」ボタンを表示
+            render_audio_button(response.text)
+
+            # テキストは折りたたんで隠す
+            with st.expander("👁️ テキストを表示して確認する", expanded=False):
+                st.markdown(response.text)
+
             st.session_state.messages.append({"role": "assistant", "content": response.text})
 
-            # 9. Web Speech APIによる自動音声読み上げ (TTS)
+            # 返答直後の自動音声発話
             safe_text = response.text.replace('\n', ' ').replace("'", "\\'").replace('"', '\\"')
             tts_html = f"""
             <script>
