@@ -343,3 +343,36 @@ if user_input:
                 if hasattr(response, 'text') and response.text:
                     reply_text = response.text
             except ValueError:
+                pass
+
+            if not reply_text:
+                if response.candidates and len(response.candidates) > 0 and response.candidates[0].content.parts:
+                    reply_text = "".join([part.text for part in response.candidates[0].content.parts if hasattr(part, 'text')])
+                
+                if not reply_text:
+                    reply_text = "I couldn't hear you clearly. Could you please say that again?"
+
+            # 「もう一度聴く」ボタンを表示
+            render_audio_button(reply_text)
+
+            # テキストは折りたたんで隠す
+            with st.expander("👁️ テキストを表示して確認する", expanded=False):
+                st.markdown(reply_text)
+
+            st.session_state.messages.append({"role": "assistant", "content": reply_text})
+
+            # 返答直後の自動音声発話
+            safe_text = reply_text.replace('\n', ' ').replace("'", "\\'").replace('"', '\\"')
+            tts_html = f"""
+            <script>
+                const utterance = new SpeechSynthesisUtterance('{safe_text}');
+                utterance.lang = 'en-US';
+                utterance.rate = 0.9;
+                window.speechSynthesis.cancel();
+                window.speechSynthesis.speak(utterance);
+            </script>
+            """
+            components.html(tts_html, height=0)
+
+        except Exception as e:
+            st.error(f"エラーが発生しました: {e}")
