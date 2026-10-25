@@ -70,7 +70,7 @@ for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
-# 7. 音声認識（STT）コンポーネント：ボタンを押して英語を声で入力
+# 7. 音声認識（STT）コンポーネント：話すと自動入力・自動送信
 st.write("---")
 st.markdown("### 🎤 音声で話しかける")
 
@@ -108,7 +108,7 @@ stt_html = """
                 recognition.start();
                 btn.innerText = "🔴 聞き取り中... 英語で話してね";
                 btn.style.backgroundColor = "#2E7D32";
-                status.innerText = "話し終わると自動でメッセージ欄に入力されます";
+                status.innerText = "話し終わると自動的に送信されます";
             } catch(e) {
                 recognition.stop();
             }
@@ -117,14 +117,33 @@ stt_html = """
         recognition.onresult = (event) => {
             const text = event.results[0][0].transcript;
             
-            // Streamlitのchat_inputを取得してテキストを自動セット
+            // Streamlitの内部Stateに認識結果を正しく伝播させる処理
             const doc = window.parent.document;
             const chatInput = doc.querySelector('textarea[data-testid="stChatInputTextArea"]');
             
             if (chatInput) {
-                chatInput.value = text;
+                // Reactのプロパティセッターを使って値を強制書き換え
+                const nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value").set;
+                nativeInputValueSetter.call(chatInput, text);
+                
+                // inputイベントを発生させてStreamlit側に状態を検知させる
                 chatInput.dispatchEvent(new Event('input', { bubbles: true }));
-                status.innerText = '✅ 入力完了！「送信(Enter)」ボタンを押してください';
+                
+                status.innerText = '✅ 送信中: "' + text + '"';
+
+                // 少し時間を置いてからEnterキーイベントを発火して自動送信
+                setTimeout(() => {
+                    const enterEvent = new KeyboardEvent('keydown', {
+                        bubbles: true,
+                        cancelable: true,
+                        key: 'Enter',
+                        code: 'Enter',
+                        keyCode: 13,
+                        which: 13
+                    });
+                    chatInput.dispatchEvent(enterEvent);
+                }, 300);
+
             } else {
                 status.innerText = '音声認識結果: "' + text + '" (コピーして入力欄に貼り付けてください)';
             }
