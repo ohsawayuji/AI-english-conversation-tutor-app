@@ -71,7 +71,7 @@ for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
-# 7. 音声認識（STT）コンポーネント：連続音認識＋音声検知リセットタイマー
+# 7. 音声認識（STT）コンポーネント：エラー完全リカバリー機能付き
 st.write("---")
 st.markdown("### 🎤 音声で話しかける")
 
@@ -103,60 +103,89 @@ stt_html = """
     let recognition = null;
     let isListening = false;
 
-    if (SpeechRecognition) {
-        recognition = new SpeechRecognition();
-        recognition.lang = 'en-US'; // 英語設定
-        recognition.interimResults = true; // 途中の音（Uhh, Umなど）もリアルタイム取得
-        recognition.continuous = true;     # 途中で勝手に認識を終了させない連続認識モード
+    function resetButtonUI(msg) {
+        if (sendTimer) {
+            clearTimeout(sendTimer);
+            sendTimer = null;
+        }
+        isListening = false;
+        btn.disabled = false;
+        btn.innerText = "🎤 タップして英語で話す";
+        btn.style.backgroundColor = "#FF4B4B";
+        if (msg) status.innerText = msg;
+    }
 
+    if (SpeechRecognition) {
         btn.onclick = () => {
             if (isListening) {
-                // 送信処理または手動停止
+                // すでに聞き取り中の場合は即時送信・停止
                 stopAndSendNow();
                 return;
             }
 
             try {
+                // 既存のオブジェクトがあれば一度強制終了してクリーン化
+                if (recognition) {
+                    try { recognition.abort(); } catch(e) {}
+                }
+
+                recognition = new SpeechRecognition();
+                recognition.lang = 'en-US';
+                recognition.interimResults = true;
+                recognition.continuous = true;
+
+                recognition.onstart = () => {
+                    isListening = true;
+                    btn.innerText = "🔴 聞き取り中... (タップで即時送信)";
+                    btn.style.backgroundColor = "#2E7D32";
+                    status.innerText = "「Uhh...」「Um...」と考えながら話して大丈夫です";
+                };
+
+                recognition.onresult = (event) => {
+                    if (sendTimer) clearTimeout(sendTimer);
+
+                    let currentText = '';
+                    for (let i = 0; i < event.results.length; i++) {
+                        currentText += event.results[i][0].transcript + ' ';
+                    }
+                    
+                    const doc = window.parent.document;
+                    const chatInput = doc.querySelector('textarea[data-testid="stChatInputTextArea"]');
+                    
+                    if (chatInput) {
+                        const nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value").set;
+                        nativeInputValueSetter.call(chatInput, currentText.trim());
+                        chatInput.dispatchEvent(new Event('input', { bubbles: true }));
+                    }
+
+                    btn.innerText = "🔴 聞き取り中... (無音になると2秒後に送信)";
+                    btn.style.backgroundColor = "#FFA000";
+                    status.innerText = '認識中: "' + currentText.trim() + '"';
+
+                    // 2秒間完全な無音が続いたら自動送信
+                    sendTimer = setTimeout(() => {
+                        stopAndSendNow();
+                    }, 2000);
+                };
+
+                recognition.onerror = (event) => {
+                    console.error("STT Error:", event.error);
+                    resetButtonUI("⚠️ マイクエラー (" + event.error + ")。もう一度タップしてください。");
+                };
+
+                recognition.onend = () => {
+                    // 自動切断されたが送信タイマーが作動していない場合、ボタン表示を元に戻す
+                    if (isListening && !sendTimer) {
+                        resetButtonUI("マイクがオフになりました。もう一度タップして話してください。");
+                    }
+                };
+
                 recognition.start();
-                isListening = true;
-                btn.innerText = "🔴 聞き取り中... (声を出している間は待ちます)";
-                btn.style.backgroundColor = "#2E7D32";
-                status.innerText = "「Uhh...」「Um...」と考えながら話して大丈夫です";
+
             } catch(e) {
-                recognition.stop();
+                console.error("Start Error:", e);
+                resetButtonUI("⚠️ 起動に失敗しました。もう一度タップしてください。");
             }
-        };
-
-        recognition.onresult = (event) => {
-            // 音声入力が検知されるたびにタイマーをリセット！
-            if (sendTimer) {
-                clearTimeout(sendTimer);
-                sendTimer = null;
-            }
-
-            let currentText = '';
-            for (let i = 0; i < event.results.length; i++) {
-                currentText += event.results[i][0].transcript + ' ';
-            }
-            
-            // Streamlitのチャット入力欄に書き込み
-            const doc = window.parent.document;
-            const chatInput = doc.querySelector('textarea[data-testid="stChatInputTextArea"]');
-            
-            if (chatInput) {
-                const nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value").set;
-                nativeInputValueSetter.call(chatInput, currentText.trim());
-                chatInput.dispatchEvent(new Event('input', { bubbles: true }));
-            }
-
-            btn.innerText = "🔴 聞き取り中... (無音になると2秒後に送信)";
-            btn.style.backgroundColor = "#FFA000";
-            status.innerText = '認識中: "' + currentText.trim() + '"';
-
-            // 何か音を拾ってから「完全な無音が2秒間続いたら」送信実行
-            sendTimer = setTimeout(() => {
-                stopAndSendNow();
-            }, 2000); // 2秒無音で発火
         };
 
         function stopAndSendNow() {
@@ -165,9 +194,8 @@ stt_html = """
                 sendTimer = null;
             }
 
-            if (isListening) {
-                recognition.stop();
-                isListening = false;
+            if (recognition) {
+                try { recognition.stop(); } catch(e) {}
             }
 
             const doc = window.parent.document;
@@ -183,30 +211,11 @@ stt_html = """
                     which: 13
                 });
                 chatInput.dispatchEvent(enterEvent);
-                status.innerText = "送信完了！AIの返答を待っています...";
+                resetButtonUI("送信完了！AIの返答を待っています...");
             } else {
-                status.innerText = "音声が検出されませんでした。もう一度試してください。";
+                resetButtonUI("音声が検出されませんでした。もう一度試してください。");
             }
-
-            btn.innerText = "🎤 タップして英語で話す";
-            btn.style.backgroundColor = "#FF4B4B";
         }
-
-        recognition.onerror = (event) => {
-            if (event.error !== 'no-speech') {
-                btn.innerText = "🎤 タップして英語で話す";
-                btn.style.backgroundColor = "#FF4B4B";
-                status.innerText = "⚠️ エラーが発生しました。もう一度試してください。";
-                isListening = false;
-            }
-        };
-
-        recognition.onend = () => {
-            // 連続モードでブラウザが勝手に切断した場合はリスニング状態なら再再開する
-            if (isListening && !sendTimer) {
-                try { recognition.start(); } catch(e) {}
-            }
-        };
 
     } else {
         btn.disabled = true;
